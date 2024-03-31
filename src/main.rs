@@ -1,7 +1,9 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
 use std::thread;
 
+use itertools::Itertools;
 use nom::branch::alt;
 use nom::bytes::streaming::{tag_no_case as tag, take_until};
 use nom::IResult;
@@ -10,15 +12,28 @@ use thiserror::Error;
 fn main() {
     let listener = TcpListener::bind("127.0.0.1:4221").unwrap();
 
-    if let Err(err) = listen_to_incoming(listener) {
+    let path = std::env::args()
+        .tuple_windows()
+        .filter_map(|(arg1, arg2)| {
+            if arg1 == "--directory" {
+                Some(arg2)
+            } else {
+                None
+            }
+        })
+        .next();
+    let path = path.map(|s| PathBuf::from(s));
+
+    if let Err(err) = serve(listener, path) {
         println!("Error while listening: {:?}", err);
     }
 }
 
-fn listen_to_incoming(listener: TcpListener) -> Result<(), std::io::Error> {
+fn serve(listener: TcpListener, path: Option<PathBuf>) -> Result<(), std::io::Error> {
     for stream in listener.incoming() {
+        let path = path.clone();
         thread::spawn(move || {
-            if let Err(e) = handle_connection(stream.unwrap()) {
+            if let Err(e) = handle_connection(stream.unwrap(), path) {
                 println!("Error while handling connection: {:?}", e)
             }
         });
@@ -35,17 +50,30 @@ pub enum ConnectionError {
     ParsingError(String), // TODO: improve parsing error
 }
 
-fn send_text_content(stream: &mut TcpStream, txt: &str) -> Result<(), std::io::Error> {
+fn send_content(
+    stream: &mut TcpStream,
+    content_type: &str,
+    cnt: impl AsRef<[u8]>,
+) -> Result<(), std::io::Error> {
     stream.write("HTTP/1.1 200 OK\r\n".as_bytes())?;
-    stream.write("Content-Type: text/plain\r\n".as_bytes())?;
-    stream.write(format!("Content-Length: {}\r\n", txt.len()).as_bytes())?;
+    stream.write(format!("Content-Type: {content_type}\r\n").as_bytes())?;
+    stream.write(format!("Content-Length: {}\r\n", cnt.as_ref().len()).as_bytes())?;
     stream.write("\r\n".as_bytes())?;
-    stream.write(txt.as_bytes())?;
+    stream.write(cnt.as_ref())?;
     stream.flush()?;
     Ok(())
 }
 
-fn handle_connection(mut stream: TcpStream) -> Result<(), ConnectionError> {
+fn send_text_content(stream: &mut TcpStream, txt: &str) -> Result<(), std::io::Error> {
+    send_content(stream, "text/plain", txt.as_bytes())
+}
+
+fn not_found(stream: &mut TcpStream) -> Result<(), std::io::Error> {
+    stream.write("HTTP/1.1 404 Not Found\r\n\r\n".as_bytes())?;
+    Ok(())
+}
+
+fn handle_connection(mut stream: TcpStream, path: Option<PathBuf>) -> Result<(), ConnectionError> {
     let mut buffer = [0; 1024];
     let len = stream.read(&mut buffer)?; // read 1K bytes for now
 
@@ -61,6 +89,12 @@ fn handle_connection(mut stream: TcpStream) -> Result<(), ConnectionError> {
     } else if req.path.starts_with("/echo/") {
         let txt = &req.path[6..];
         send_text_content(&mut stream, txt).unwrap();
+    } else if req.path.starts_with("/files/") {
+        let path = path.unwrap_or_else(|| PathBuf::from("."));
+        let file_path = path.join(&req.path[7..]);
+
+        let file = std::fs::read_to_string(file_path)?;
+        send_content(&mut stream, "application/octet-stream", file);
     } else if req.path == "/user-agent" {
         let ua = req
             .headers
@@ -68,11 +102,10 @@ fn handle_connection(mut stream: TcpStream) -> Result<(), ConnectionError> {
             .find(|(k, _)| *k == "User-Agent")
             .map(|(_, v)| v)
             .unwrap_or(&"Unknown");
+
         send_text_content(&mut stream, ua).unwrap();
     } else {
-        stream
-            .write("HTTP/1.1 404 Not Found\r\n\r\n".as_bytes())
-            .unwrap();
+        not_found(&mut stream)?;
     }
 
     stream.flush()?;
