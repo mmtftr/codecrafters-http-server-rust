@@ -16,7 +16,9 @@ fn main() {
 
 fn listen_to_incoming(listener: TcpListener) -> Result<(), std::io::Error> {
     for stream in listener.incoming() {
-        let _ = handle_connection(stream?);
+        if let Err(e) = handle_connection(stream?) {
+            println!("Error while handling connection: {:?}", e)
+        }
     }
 
     Ok(())
@@ -49,18 +51,26 @@ fn handle_connection(mut stream: TcpStream) -> Result<(), ConnectionError> {
         .map_err(|e| ConnectionError::ParsingError(e.to_string()))?
         .1;
 
+    println!("Request: {req:?}");
+
     if req.path == "/" {
         stream.write("HTTP/1.1 200 OK\r\n\r\n".as_bytes()).unwrap();
     } else if req.path.starts_with("/echo/") {
         let txt = &req.path[6..];
         send_text_content(&mut stream, txt).unwrap();
+    } else if req.path == "/user-agent" {
+        let ua = req
+            .headers
+            .iter()
+            .find(|(k, _)| *k == "User-Agent")
+            .map(|(_, v)| v)
+            .unwrap_or(&"Unknown");
+        send_text_content(&mut stream, ua).unwrap();
     } else {
         stream
             .write("HTTP/1.1 404 Not Found\r\n\r\n".as_bytes())
             .unwrap();
     }
-
-    println!("Request: {req:?}");
 
     stream.flush()?;
 
@@ -78,8 +88,24 @@ pub struct Request<'a> {
 }
 
 fn parse_headers(input: &str) -> IResult<&str, Vec<(&str, &str)>> {
-    // todo!
-    Ok(("", vec![]))
+    let mut headers = vec![];
+
+    let mut rest = input;
+
+    loop {
+        let Ok((rst, name)): IResult<&str, &str> = take_until(":")(rest) else {
+            break;
+        };
+        let (rst, _) = tag(":")(rst)?;
+        let (rst, val) = take_until("\r\n")(rst)?;
+        let (rst, _) = tag("\r\n")(rst)?;
+
+        rest = rst;
+
+        headers.push((name, val));
+    }
+
+    Ok((rest, headers))
 }
 
 fn parse_request(input: &str) -> IResult<&str, Request> {
@@ -88,8 +114,9 @@ fn parse_request(input: &str) -> IResult<&str, Request> {
     let (rest, path) = take_until(" ")(rest)?;
     let (rest, _) = tag(" ")(rest)?;
     let (rest, version) = take_until("\r\n")(rest)?;
+    let (rest, _) = tag("\r\n")(rest)?;
 
-    let (rest, headers) = parse_headers(input)?;
+    let (rest, headers) = parse_headers(rest)?;
 
     return Ok((
         rest,
