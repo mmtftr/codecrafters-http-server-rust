@@ -16,7 +16,7 @@ fn main() {
 
 fn listen_to_incoming(listener: TcpListener) -> Result<(), std::io::Error> {
     for stream in listener.incoming() {
-        handle_connection(stream?);
+        let _ = handle_connection(stream?);
     }
 
     Ok(())
@@ -51,7 +51,7 @@ fn handle_connection(mut stream: TcpStream) -> Result<(), ConnectionError> {
 
     if req.path == "/" {
         stream.write("HTTP/1.1 200 OK\r\n\r\n".as_bytes()).unwrap();
-    } else if req.path.starts_with("/echo/") && req.path[6..].find("/").is_none() {
+    } else if req.path.starts_with("/echo/") {
         let txt = &req.path[6..];
         send_text_content(&mut stream, txt).unwrap();
     } else {
