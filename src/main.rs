@@ -1,5 +1,12 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::str::FromStr;
+
+use nom::branch::alt;
+use nom::bytes::streaming::{tag_no_case as tag, take_until};
+use nom::character::complete::one_of;
+use nom::IResult;
+use thiserror::Error;
 
 fn main() {
     let listener = TcpListener::bind("127.0.0.1:4221").unwrap();
@@ -17,11 +24,69 @@ fn listen_to_incoming(listener: TcpListener) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-fn handle_connection(mut stream: TcpStream) {
+#[derive(Error, Debug)]
+pub enum ConnectionError {
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+    #[error("Parsing error: {0}")]
+    ParsingError(String), // TODO: improve parsing error
+}
+
+fn handle_connection(mut stream: TcpStream) -> Result<(), ConnectionError> {
     let mut buffer = [0; 1024];
-    stream.read(&mut buffer).unwrap(); // read 1K bytes for now
+    stream.read(&mut buffer)?; // read 1K bytes for now
 
-    stream.write("HTTP/1.1 200 OK\r\n\r\n".as_bytes()).unwrap();
+    let utf8 = String::from_utf8_lossy(&buffer[..]);
+    let req = parse_request(&utf8)
+        .map_err(|e| ConnectionError::ParsingError(e.to_string()))?
+        .1;
 
-    println!("Request: {}", String::from_utf8_lossy(&buffer[..]));
+    if req.path == "/" {
+        stream.write("HTTP/1.1 200 OK\r\n\r\n".as_bytes()).unwrap();
+    } else {
+        stream
+            .write("HTTP/1.1 404 Not Found\r\n\r\n".as_bytes())
+            .unwrap();
+    }
+
+    println!("Request: {req:?}");
+
+    stream.flush()?;
+
+    stream.shutdown(std::net::Shutdown::Write)?;
+
+    Ok(())
+}
+
+#[derive(Debug)]
+pub struct Request<'a> {
+    method: &'a str,
+    path: &'a str,
+    version: &'a str,
+    headers: Vec<(&'a str, &'a str)>,
+}
+
+fn parse_headers(input: &str) -> IResult<&str, Vec<(&str, &str)>> {
+    // todo!
+    Ok(("", vec![]))
+}
+
+fn parse_request(input: &str) -> IResult<&str, Request> {
+    let (rest, method) = alt((tag("GET"), tag("POST")))(input)?;
+    let (rest, _) = tag(" ")(rest)?;
+    let (rest, path) = take_until(" ")(rest)?;
+    let (rest, _) = tag(" ")(rest)?;
+    let (rest, version) = take_until("\r\n")(rest)?;
+
+    let (rest, headers) = parse_headers(input)?;
+
+    return Ok((
+        rest,
+        Request {
+            method,
+            path,
+            version,
+            headers,
+        },
+    ));
 }
