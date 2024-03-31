@@ -94,7 +94,7 @@ fn handle_connection(mut stream: TcpStream, path: Option<PathBuf>) -> Result<(),
         let file_path = path.join(&req.path[7..]);
 
         match std::fs::read_to_string(file_path) {
-            Ok(file) => send_text_content(&mut stream, &file)?,
+            Ok(file) => send_content(&mut stream, "application/octet-stream", &file)?,
             Err(_) => not_found(&mut stream)?,
         }
     } else if req.path == "/user-agent" {
