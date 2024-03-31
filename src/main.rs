@@ -1,10 +1,8 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::str::FromStr;
 
 use nom::branch::alt;
 use nom::bytes::streaming::{tag_no_case as tag, take_until};
-use nom::character::complete::one_of;
 use nom::IResult;
 use thiserror::Error;
 
@@ -32,6 +30,16 @@ pub enum ConnectionError {
     ParsingError(String), // TODO: improve parsing error
 }
 
+fn send_text_content(stream: &mut TcpStream, txt: &str) -> Result<(), std::io::Error> {
+    stream.write("HTTP/1.1 200 OK\r\n".as_bytes())?;
+    stream.write("Content-Type: text/plain\r\n".as_bytes())?;
+    stream.write(format!("Content-Length: {}\r\n", txt.len()).as_bytes())?;
+    stream.write("\r\n".as_bytes())?;
+    stream.write(txt.as_bytes())?;
+    stream.flush()?;
+    Ok(())
+}
+
 fn handle_connection(mut stream: TcpStream) -> Result<(), ConnectionError> {
     let mut buffer = [0; 1024];
     stream.read(&mut buffer)?; // read 1K bytes for now
@@ -43,6 +51,9 @@ fn handle_connection(mut stream: TcpStream) -> Result<(), ConnectionError> {
 
     if req.path == "/" {
         stream.write("HTTP/1.1 200 OK\r\n\r\n".as_bytes()).unwrap();
+    } else if req.path.starts_with("/echo/") && req.path[6..].find("/").is_none() {
+        let txt = &req.path[6..];
+        send_text_content(&mut stream, txt).unwrap();
     } else {
         stream
             .write("HTTP/1.1 404 Not Found\r\n\r\n".as_bytes())
