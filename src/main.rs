@@ -1,6 +1,6 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::thread;
 
 use itertools::Itertools;
@@ -88,13 +88,15 @@ fn handle_connection(mut stream: TcpStream, path: Option<PathBuf>) -> Result<(),
         stream.write("HTTP/1.1 200 OK\r\n\r\n".as_bytes()).unwrap();
     } else if req.path.starts_with("/echo/") {
         let txt = &req.path[6..];
-        send_text_content(&mut stream, txt).unwrap();
+        send_text_content(&mut stream, txt)?;
     } else if req.path.starts_with("/files/") {
         let path = path.unwrap_or_else(|| PathBuf::from("."));
         let file_path = path.join(&req.path[7..]);
 
-        let file = std::fs::read_to_string(file_path)?;
-        send_content(&mut stream, "application/octet-stream", file);
+        match std::fs::read_to_string(file_path) {
+            Ok(file) => send_text_content(&mut stream, &file)?,
+            Err(_) => not_found(&mut stream)?,
+        }
     } else if req.path == "/user-agent" {
         let ua = req
             .headers
@@ -103,7 +105,7 @@ fn handle_connection(mut stream: TcpStream, path: Option<PathBuf>) -> Result<(),
             .map(|(_, v)| v)
             .unwrap_or(&"Unknown");
 
-        send_text_content(&mut stream, ua).unwrap();
+        send_text_content(&mut stream, ua)?;
     } else {
         not_found(&mut stream)?;
     }
@@ -116,6 +118,7 @@ fn handle_connection(mut stream: TcpStream, path: Option<PathBuf>) -> Result<(),
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct Request<'a> {
     method: &'a str,
     path: &'a str,
