@@ -1,5 +1,6 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::thread;
 
 use nom::branch::alt;
 use nom::bytes::streaming::{tag_no_case as tag, take_until};
@@ -16,9 +17,11 @@ fn main() {
 
 fn listen_to_incoming(listener: TcpListener) -> Result<(), std::io::Error> {
     for stream in listener.incoming() {
-        if let Err(e) = handle_connection(stream?) {
-            println!("Error while handling connection: {:?}", e)
-        }
+        thread::spawn(move || {
+            if let Err(e) = handle_connection(stream.unwrap()) {
+                println!("Error while handling connection: {:?}", e)
+            }
+        });
     }
 
     Ok(())
@@ -44,9 +47,9 @@ fn send_text_content(stream: &mut TcpStream, txt: &str) -> Result<(), std::io::E
 
 fn handle_connection(mut stream: TcpStream) -> Result<(), ConnectionError> {
     let mut buffer = [0; 1024];
-    stream.read(&mut buffer)?; // read 1K bytes for now
+    let len = stream.read(&mut buffer)?; // read 1K bytes for now
 
-    let utf8 = String::from_utf8_lossy(&buffer[..]);
+    let utf8 = String::from_utf8_lossy(&buffer[..=len]);
     let req = parse_request(&utf8)
         .map_err(|e| ConnectionError::ParsingError(e.to_string()))?
         .1;
