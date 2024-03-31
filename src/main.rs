@@ -96,7 +96,7 @@ fn parse_headers(input: &str) -> IResult<&str, Vec<(&str, &str)>> {
         let Ok((rst, name)): IResult<&str, &str> = take_until(":")(rest) else {
             break;
         };
-        let (rst, _) = tag(":")(rst)?;
+        let (rst, _) = tag(": ")(rst)?;
         let (rst, val) = take_until("\r\n")(rst)?;
         let (rst, _) = tag("\r\n")(rst)?;
 
