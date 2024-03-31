@@ -5,6 +5,7 @@ use std::thread;
 
 use itertools::Itertools;
 use nom::branch::alt;
+use nom::bytes::complete::take_until1;
 use nom::bytes::streaming::{tag_no_case as tag, take_until};
 use nom::IResult;
 use thiserror::Error;
@@ -73,41 +74,70 @@ fn not_found(stream: &mut TcpStream) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-fn handle_connection(mut stream: TcpStream, path: Option<PathBuf>) -> Result<(), ConnectionError> {
-    let mut buffer = [0; 1024];
-    let len = stream.read(&mut buffer)?; // read 1K bytes for now
+fn ok(stream: &mut TcpStream) -> Result<(), std::io::Error> {
+    stream.write("HTTP/1.1 200 OK\r\n\r\n".as_bytes())?;
+    Ok(())
+}
 
-    let utf8 = String::from_utf8_lossy(&buffer[..=len]);
+fn created(stream: &mut TcpStream) -> Result<(), std::io::Error> {
+    stream.write("HTTP/1.1 201 Created\r\n\r\n".as_bytes())?;
+    Ok(())
+}
+
+fn handle_connection(mut stream: TcpStream, path: Option<PathBuf>) -> Result<(), ConnectionError> {
+    let mut buffer = [0; 10000];
+    let len = stream.read(&mut buffer)?;
+
+    let utf8 = String::from_utf8_lossy(&buffer[..len]);
     let req = parse_request(&utf8)
         .map_err(|e| ConnectionError::ParsingError(e.to_string()))?
         .1;
 
     println!("Request: {req:?}");
 
-    if req.path == "/" {
-        stream.write("HTTP/1.1 200 OK\r\n\r\n".as_bytes()).unwrap();
-    } else if req.path.starts_with("/echo/") {
-        let txt = &req.path[6..];
-        send_text_content(&mut stream, txt)?;
-    } else if req.path.starts_with("/files/") {
-        let path = path.unwrap_or_else(|| PathBuf::from("."));
-        let file_path = path.join(&req.path[7..]);
-
-        match std::fs::read_to_string(file_path) {
-            Ok(file) => send_content(&mut stream, "application/octet-stream", &file)?,
-            Err(_) => not_found(&mut stream)?,
+    match req {
+        Request { path: "/", .. } => {
+            ok(&mut stream)?;
         }
-    } else if req.path == "/user-agent" {
-        let ua = req
-            .headers
-            .iter()
-            .find(|(k, _)| *k == "User-Agent")
-            .map(|(_, v)| v)
-            .unwrap_or(&"Unknown");
+        _ if req.path.starts_with("/echo/") => {
+            let txt = &req.path[6..];
+            send_text_content(&mut stream, txt)?;
+        }
+        req @ Request { method: "GET", .. } if req.path.starts_with("/files/") => {
+            let path = path.unwrap_or_else(|| PathBuf::from("."));
+            let file_path = path.join(&req.path[7..]);
 
-        send_text_content(&mut stream, ua)?;
-    } else {
-        not_found(&mut stream)?;
+            match std::fs::read_to_string(file_path) {
+                Ok(file) => send_content(&mut stream, "application/octet-stream", &file)?,
+                Err(_) => not_found(&mut stream)?,
+            };
+        }
+        req @ Request { method: "POST", .. } if req.path.starts_with("/files/") => {
+            let path = path.unwrap_or_else(|| PathBuf::from("."));
+            let file_path = path.join(&req.path[7..]);
+
+            if let Ok(()) = std::fs::write(file_path, req.body) {
+                created(&mut stream)?;
+            } else {
+                not_found(&mut stream)?; // todo: fix
+            }
+        }
+        req @ Request {
+            path: "/user-agent",
+            ..
+        } => {
+            let ua = req
+                .headers
+                .iter()
+                .find(|(k, _)| *k == "User-Agent")
+                .map(|(_, v)| v)
+                .unwrap_or(&"Unknown");
+
+            send_text_content(&mut stream, ua)?;
+        }
+        _ => {
+            not_found(&mut stream)?;
+        }
     }
 
     stream.flush()?;
@@ -124,6 +154,7 @@ pub struct Request<'a> {
     path: &'a str,
     version: &'a str,
     headers: Vec<(&'a str, &'a str)>,
+    body: &'a str,
 }
 
 fn parse_headers(input: &str) -> IResult<&str, Vec<(&str, &str)>> {
@@ -132,7 +163,7 @@ fn parse_headers(input: &str) -> IResult<&str, Vec<(&str, &str)>> {
     let mut rest = input;
 
     loop {
-        let Ok((rst, name)): IResult<&str, &str> = take_until(":")(rest) else {
+        let Ok((rst, name)): IResult<&str, &str> = take_until1(":")(rest) else {
             break;
         };
         let (rst, _) = tag(": ")(rst)?;
@@ -156,6 +187,7 @@ fn parse_request(input: &str) -> IResult<&str, Request> {
     let (rest, _) = tag("\r\n")(rest)?;
 
     let (rest, headers) = parse_headers(rest)?;
+    let (rest, _) = tag("\r\n")(rest)?;
 
     return Ok((
         rest,
@@ -164,6 +196,7 @@ fn parse_request(input: &str) -> IResult<&str, Request> {
             path,
             version,
             headers,
+            body: rest,
         },
     ));
 }
